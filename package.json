@@ -1,0 +1,37 @@
+{
+  "name": "examtrace",
+  "productName": "ExamTrace",
+  "version": "1.0.0",
+  "description": "Smart Desktop Examination & Activity Monitoring System",
+  "main": "electron/main.cjs",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "electron:dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && electron .\"",
+    "electron:preview": "vite build && NODE_ENV=production electron .",
+    "test:phase1": "electron test/verify_ipc.cjs",
+    "start": "npm run electron:dev"
+  },
+  "keywords": [
+    "electron",
+    "react",
+    "examination",
+    "monitoring",
+    "examtrace"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "electron": "^33.2.1",
+    "vite": "^6.0.7",
+    "wait-on": "^8.0.1"
+  }
+}
