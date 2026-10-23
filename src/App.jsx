@@ -1,32 +1,102 @@
+// src/App.jsx
+// Root application component managing mode navigation, authentication lifecycle,
+// and screen routing for ExamTrace.
+
 import React, { useState, useEffect } from "react";
+import CandidateDashboard from "./views/CandidateDashboard.jsx";
+import ExaminerDashboard from "./views/ExaminerDashboard.jsx";
+import ExamCreator from "./views/ExamCreator.jsx";
+import ManageExams from "./views/ManageExams.jsx";
+import PasscodeModal from "./components/PasscodeModal.jsx";
+import SetupExaminerModal from "./components/SetupExaminerModal.jsx";
 
 export default function App() {
   const [activeMode, setActiveMode] = useState("candidate"); // 'candidate' or 'examiner'
   const [activeTab, setActiveTab] = useState("dashboard");
+  const [editingExamId, setEditingExamId] = useState(null);
+
+  // Authentication & Configuration Status
+  const [authStatus, setAuthStatus] = useState(null);
+  const [isPasscodeModalOpen, setIsPasscodeModalOpen] = useState(false);
+  const [isSetupModalOpen, setIsSetupModalOpen] = useState(false);
+
+  // System Diagnostics Info (from Phase 1)
   const [systemInfo, setSystemInfo] = useState(null);
-  const [ipcStatus, setIpcStatus] = useState("connecting"); // 'connecting', 'connected', 'error'
-  const [errorMessage, setErrorMessage] = useState("");
 
-  // Phase 1: Test secure IPC communication with Electron Main
   useEffect(() => {
-    async function testIpcConnection() {
-      try {
-        if (!window.examTrace || typeof window.examTrace.ping !== "function") {
-          throw new Error("window.examTrace API not found. Preload script may not have loaded.");
-        }
+    checkAppStatus();
+  }, []);
 
+  async function checkAppStatus() {
+    try {
+      if (window.examTrace) {
         const info = await window.examTrace.ping();
         setSystemInfo(info);
-        setIpcStatus("connected");
-      } catch (err) {
-        console.error("IPC Connection failed:", err);
-        setIpcStatus("error");
-        setErrorMessage(err.message || "Failed to communicate with Electron Main Process");
-      }
-    }
 
-    testIpcConnection();
-  }, []);
+        const status = await window.examTrace.getExaminerStatus();
+        setAuthStatus(status);
+
+        // First-run setup check
+        if (!status.isConfigured && !status.recoveryRequired) {
+          setIsSetupModalOpen(true);
+        }
+
+        // If examiner was unlocked in Main process, sync React state
+        if (status.isUnlocked) {
+          setActiveMode("examiner");
+        } else {
+          setActiveMode("candidate");
+        }
+      }
+    } catch (err) {
+      console.error("[ExamTrace] Initialization check failed:", err);
+    }
+  }
+
+  // Handle switching to Examiner Mode
+  function handleRequestExaminerMode() {
+    if (activeMode === "examiner") return;
+    setIsPasscodeModalOpen(true);
+  }
+
+  // Handle unlocking Examiner Mode
+  function handleUnlockSuccess() {
+    setIsPasscodeModalOpen(false);
+    setActiveMode("examiner");
+    setActiveTab("dashboard");
+    checkAppStatus();
+  }
+
+  // Handle locking Examiner Mode
+  async function handleLockExaminer() {
+    try {
+      await window.examTrace.lockExaminer();
+      setActiveMode("candidate");
+      setActiveTab("dashboard");
+      setEditingExamId(null);
+      checkAppStatus();
+    } catch (err) {
+      console.error("Failed to lock examiner mode:", err);
+    }
+  }
+
+  // Handle first-time setup completion
+  function handleSetupSuccess() {
+    setIsSetupModalOpen(false);
+    checkAppStatus();
+  }
+
+  // Transition from Manage Exams to Edit form
+  function handleEditExam(examId) {
+    setEditingExamId(examId);
+    setActiveTab("create-exam");
+  }
+
+  // Finished creating or editing an exam
+  function handleExamSaved() {
+    setEditingExamId(null);
+    setActiveTab("manage-exams");
+  }
 
   return (
     <div className="app-container">
@@ -62,29 +132,38 @@ export default function App() {
                 <span>📑</span> My Reports
               </button>
               <button
-                className={`nav-item ${activeTab === "settings" ? "active" : ""}`}
-                onClick={() => setActiveTab("settings")}
+                className={`nav-item ${activeTab === "diagnostics" ? "active" : ""}`}
+                onClick={() => setActiveTab("diagnostics")}
               >
-                <span>⚙️</span> Settings
+                <span>🔍</span> System Diagnostics
               </button>
             </>
           ) : (
             <>
               <button
                 className={`nav-item ${activeTab === "dashboard" ? "active" : ""}`}
-                onClick={() => setActiveTab("dashboard")}
+                onClick={() => {
+                  setEditingExamId(null);
+                  setActiveTab("dashboard");
+                }}
               >
                 <span>📊</span> Dashboard
               </button>
               <button
                 className={`nav-item ${activeTab === "create-exam" ? "active" : ""}`}
-                onClick={() => setActiveTab("create-exam")}
+                onClick={() => {
+                  setEditingExamId(null);
+                  setActiveTab("create-exam");
+                }}
               >
                 <span>✏️</span> Create Exam
               </button>
               <button
                 className={`nav-item ${activeTab === "manage-exams" ? "active" : ""}`}
-                onClick={() => setActiveTab("manage-exams")}
+                onClick={() => {
+                  setEditingExamId(null);
+                  setActiveTab("manage-exams");
+                }}
               >
                 <span>📂</span> Manage Exams
               </button>
@@ -92,7 +171,7 @@ export default function App() {
                 className={`nav-item ${activeTab === "history" ? "active" : ""}`}
                 onClick={() => setActiveTab("history")}
               >
-                <span>📜</span> History
+                <span>📜</span> Attempt History
               </button>
               <button
                 className={`nav-item ${activeTab === "analytics" ? "active" : ""}`}
@@ -101,10 +180,10 @@ export default function App() {
                 <span>📈</span> Analytics
               </button>
               <button
-                className={`nav-item ${activeTab === "settings" ? "active" : ""}`}
-                onClick={() => setActiveTab("settings")}
+                className={`nav-item ${activeTab === "diagnostics" ? "active" : ""}`}
+                onClick={() => setActiveTab("diagnostics")}
               >
-                <span>⚙️</span> Settings
+                <span>🔍</span> Diagnostics
               </button>
             </>
           )}
@@ -114,20 +193,14 @@ export default function App() {
           {activeMode === "candidate" ? (
             <button
               className="mode-toggle-btn"
-              onClick={() => {
-                setActiveMode("examiner");
-                setActiveTab("dashboard");
-              }}
+              onClick={handleRequestExaminerMode}
             >
               <span>🔒</span> Switch to Examiner Mode
             </button>
           ) : (
             <button
               className="mode-toggle-btn"
-              onClick={() => {
-                setActiveMode("candidate");
-                setActiveTab("dashboard");
-              }}
+              onClick={handleLockExaminer}
             >
               <span>🔓</span> Lock Examiner Mode
             </button>
@@ -141,120 +214,153 @@ export default function App() {
           <div className="topbar-title">
             <h2>
               {activeTab === "dashboard" && "Examination Dashboard"}
-              {activeTab === "history" && "Attempt History"}
-              {activeTab === "reports" && "Examination Reports"}
-              {activeTab === "create-exam" && "Create New Examination"}
+              {activeTab === "history" && (activeMode === "candidate" ? "My History" : "Attempt History")}
+              {activeTab === "reports" && "My Reports"}
+              {activeTab === "create-exam" && (editingExamId ? "Edit Examination" : "Create New Examination")}
               {activeTab === "manage-exams" && "Manage Saved Examinations"}
               {activeTab === "analytics" && "Performance Analytics"}
-              {activeTab === "settings" && "Application Settings"}
+              {activeTab === "diagnostics" && "System Diagnostics & IPC"}
             </h2>
             <span
               className={`badge ${
                 activeMode === "candidate" ? "badge-candidate" : "badge-examiner"
               }`}
             >
-              {activeMode === "candidate" ? "Candidate Mode" : "Examiner Mode"}
+              {activeMode === "candidate" ? "Candidate Mode" : "Examiner Mode (Unlocked)"}
             </span>
           </div>
 
           <div>
-            {ipcStatus === "connected" && (
-              <span className="badge badge-success">● IPC Connected</span>
-            )}
-            {ipcStatus === "connecting" && (
-              <span className="badge badge-candidate">Connecting...</span>
-            )}
-            {ipcStatus === "error" && (
-              <span className="badge" style={{ backgroundColor: "rgba(239, 68, 68, 0.2)", color: "#ef4444" }}>
-                ✕ IPC Error
-              </span>
-            )}
+            <span className="badge badge-success">● IPC Active</span>
           </div>
         </header>
 
         <div className="content-body">
-          {/* Phase 1 Overview Banner */}
-          <div className="info-banner">
-            <div className="info-banner-icon">🚀</div>
-            <div className="info-banner-text">
-              <h3>Phase 1: Electron Foundation & Project Identity Active</h3>
-              <p>
-                The secure Electron desktop shell is initialized with context isolation, disabled Node integration in the renderer,
-                and an explicitly mapped <code>window.examTrace</code> API.
+          {/* Recovery Error Banner (if critical auth file is missing with existing data) */}
+          {authStatus && authStatus.recoveryRequired && (
+            <div className="error-alert" style={{ marginBottom: "8px" }}>
+              <strong>⚠️ Authentication Recovery Alert:</strong> {authStatus.errorMessage}
+            </div>
+          )}
+
+          {/* Views Routing */}
+          {activeTab === "dashboard" && (
+            activeMode === "candidate" ? (
+              <CandidateDashboard onOpenUnlockModal={handleRequestExaminerMode} />
+            ) : (
+              <ExaminerDashboard
+                onNavigate={(tab) => {
+                  setEditingExamId(null);
+                  setActiveTab(tab);
+                }}
+                onLock={handleLockExaminer}
+              />
+            )
+          )}
+
+          {activeTab === "create-exam" && activeMode === "examiner" && (
+            <ExamCreator
+              editingExamId={editingExamId}
+              onFinished={handleExamSaved}
+              onCancel={() => {
+                setEditingExamId(null);
+                setActiveTab("manage-exams");
+              }}
+            />
+          )}
+
+          {activeTab === "manage-exams" && activeMode === "examiner" && (
+            <ManageExams
+              onEditExam={handleEditExam}
+              onCreateNew={() => {
+                setEditingExamId(null);
+                setActiveTab("create-exam");
+              }}
+            />
+          )}
+
+          {activeTab === "history" && (
+            <div className="card empty-state">
+              <h4>Attempt History</h4>
+              <p>Completed examination attempts and chronological activity logs will be recorded here in Phase 5.</p>
+            </div>
+          )}
+
+          {activeTab === "reports" && (
+            <div className="card empty-state">
+              <h4>Candidate Reports</h4>
+              <p>Individual examination scores, answers review, and desktop monitoring timelines will appear here in Phase 5.</p>
+            </div>
+          )}
+
+          {activeTab === "analytics" && (
+            <div className="card empty-state">
+              <h4>Performance Analytics</h4>
+              <p>Examiner class-wide averages, pass rates, and monitoring interruption analytics will be computed here in Phase 6.</p>
+            </div>
+          )}
+
+          {activeTab === "diagnostics" && (
+            <section className="card">
+              <div className="card-title">
+                <span>Main Process IPC & Security Diagnostics</span>
+                {systemInfo && (
+                  <span style={{ fontSize: "12px", color: "var(--color-text-muted)" }}>
+                    {systemInfo.timestamp}
+                  </span>
+                )}
+              </div>
+              <p style={{ fontSize: "13px", color: "var(--color-text-muted)", marginBottom: "16px" }}>
+                Current Main-process authorization status and isolated paths:
               </p>
-            </div>
-          </div>
 
-          {/* Secure IPC Diagnostics Card */}
-          <section className="card">
-            <div className="card-title">
-              <span>Main Process IPC Diagnostic</span>
-              {systemInfo && <span style={{ fontSize: "12px", color: "var(--color-text-muted)" }}>{systemInfo.timestamp}</span>}
-            </div>
-            <p style={{ fontSize: "13px", color: "var(--color-text-muted)", marginBottom: "12px" }}>
-              The data below is fetched securely from the Electron Main Process via <code>contextBridge</code> (no raw <code>ipcRenderer</code> exposed).
-            </p>
-
-            {ipcStatus === "connecting" && <p>Checking IPC connection with Main Process...</p>}
-
-            {ipcStatus === "error" && (
-              <div style={{ color: "#ef4444", fontSize: "13px" }}>
-                Error connecting to Main Process: {errorMessage}
-              </div>
-            )}
-
-            {systemInfo && (
-              <div className="diagnostic-grid">
-                <div className="diag-item">
-                  <div className="diag-label">Application Name</div>
-                  <div className="diag-value">{systemInfo.appName}</div>
+              {systemInfo && (
+                <div className="diagnostic-grid">
+                  <div className="diag-item">
+                    <div className="diag-label">Application</div>
+                    <div className="diag-value">{systemInfo.appName}</div>
+                  </div>
+                  <div className="diag-item">
+                    <div className="diag-label">Examiner Mode</div>
+                    <div className="diag-value" style={{ color: activeMode === "examiner" ? "#f59e0b" : "#3b82f6" }}>
+                      {activeMode === "examiner" ? "UNLOCKED" : "LOCKED"}
+                    </div>
+                  </div>
+                  <div className="diag-item">
+                    <div className="diag-label">Examiner Configured</div>
+                    <div className="diag-value">
+                      {authStatus && authStatus.isConfigured ? "Yes" : "No"}
+                    </div>
+                  </div>
+                  <div className="diag-item">
+                    <div className="diag-label">Recovery Error</div>
+                    <div className="diag-value">
+                      {authStatus && authStatus.recoveryRequired ? "YES (ACTIVE)" : "None"}
+                    </div>
+                  </div>
+                  <div className="diag-item" style={{ gridColumn: "1 / -1" }}>
+                    <div className="diag-label">UserData Storage Path</div>
+                    <div className="diag-value">{systemInfo.userDataPath}</div>
+                  </div>
                 </div>
-                <div className="diag-item">
-                  <div className="diag-label">Product Name</div>
-                  <div className="diag-value">{systemInfo.productName}</div>
-                </div>
-                <div className="diag-item">
-                  <div className="diag-label">Platform (OS)</div>
-                  <div className="diag-value">{systemInfo.platform}</div>
-                </div>
-                <div className="diag-item">
-                  <div className="diag-label">Electron Version</div>
-                  <div className="diag-value">v{systemInfo.electronVersion}</div>
-                </div>
-                <div className="diag-item">
-                  <div className="diag-label">Node.js Version</div>
-                  <div className="diag-value">v{systemInfo.nodeVersion}</div>
-                </div>
-                <div className="diag-item" style={{ gridColumn: "1 / -1" }}>
-                  <div className="diag-label">Verified Application Data Directory (`app.getPath("userData")`)</div>
-                  <div className="diag-value">{systemInfo.userDataPath}</div>
-                </div>
-              </div>
-            )}
-          </section>
-
-          {/* Architecture Concept Card */}
-          <section className="card">
-            <div className="card-title">
-              <span>Application Modes Overview</span>
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px", marginTop: "12px" }}>
-              <div style={{ padding: "16px", backgroundColor: "rgba(15, 23, 42, 0.4)", borderRadius: "8px", border: "1px solid var(--color-border)" }}>
-                <h4 style={{ fontSize: "14px", color: "var(--color-primary)", marginBottom: "6px" }}>Candidate Mode (Default)</h4>
-                <p style={{ fontSize: "12px", color: "var(--color-text-muted)", lineHeight: 1.5 }}>
-                  Candidates view available examinations, enter their display name, take timed tests with real-time activity monitoring, and review their reports.
-                </p>
-              </div>
-              <div style={{ padding: "16px", backgroundColor: "rgba(15, 23, 42, 0.4)", borderRadius: "8px", border: "1px solid var(--color-border)" }}>
-                <h4 style={{ fontSize: "14px", color: "var(--color-warning)", marginBottom: "6px" }}>Examiner Mode (Protected)</h4>
-                <p style={{ fontSize: "12px", color: "var(--color-text-muted)", lineHeight: 1.5 }}>
-                  Examiners unlock management controls using a salted, scrypt-hashed passcode to create MCQs, edit examinations, configure monitoring thresholds, and inspect analytics.
-                </p>
-              </div>
-            </div>
-          </section>
+              )}
+            </section>
+          )}
         </div>
       </main>
+
+      {/* Examiner Passcode Unlock Modal */}
+      <PasscodeModal
+        isOpen={isPasscodeModalOpen}
+        onClose={() => setIsPasscodeModalOpen(false)}
+        onSuccess={handleUnlockSuccess}
+      />
+
+      {/* First-Time Setup Modal */}
+      <SetupExaminerModal
+        isOpen={isSetupModalOpen}
+        onSuccess={handleSetupSuccess}
+      />
     </div>
   );
 }

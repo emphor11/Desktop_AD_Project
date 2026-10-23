@@ -12,6 +12,7 @@
     "electron:dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "electron:preview": "vite build && NODE_ENV=production electron .",
     "test:phase1": "electron test/verify_ipc.cjs",
+    "test:phase2": "electron test/phase2_test.cjs",
     "start": "npm run electron:dev"
   },
   "keywords": [

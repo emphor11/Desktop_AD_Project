@@ -4,6 +4,8 @@
 
 const { app, BrowserWindow, ipcMain } = require("electron");
 const path = require("path");
+const { registerIpcHandlers } = require("./ipc/handlers.cjs");
+const examService = require("./services/examService.cjs");
 
 // Ensure the application identity is set consistently before querying paths
 app.name = "ExamTrace";
@@ -47,22 +49,19 @@ function createWindow() {
   });
 }
 
-// Register basic ping IPC handler to verify Main <-> Renderer communication
-ipcMain.handle("app:ping", async () => {
-  return {
-    appName: app.name,
-    productName: "ExamTrace",
-    version: app.getVersion(),
-    electronVersion: process.versions.electron,
-    nodeVersion: process.versions.node,
-    platform: process.platform,
-    userDataPath: app.getPath("userData"),
-    timestamp: new Date().toISOString()
-  };
-});
-
+}
 // Application lifecycle management
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // Register all modular IPC handlers
+  registerIpcHandlers();
+
+  // Initialize data (built-in sample exam) on first run
+  try {
+    await examService.initializeData();
+  } catch (err) {
+    console.error("[ExamTrace] Data initialization failed:", err);
+  }
+
   createWindow();
 
   // macOS standard behavior: recreate a window when dock icon is clicked
