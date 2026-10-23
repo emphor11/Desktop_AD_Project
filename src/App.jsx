@@ -1,12 +1,14 @@
 // src/App.jsx
 // Root application component managing mode navigation, authentication lifecycle,
-// and screen routing for ExamTrace.
+// active examination workspace, and results reporting for ExamTrace.
 
 import React, { useState, useEffect } from "react";
 import CandidateDashboard from "./views/CandidateDashboard.jsx";
 import ExaminerDashboard from "./views/ExaminerDashboard.jsx";
 import ExamCreator from "./views/ExamCreator.jsx";
 import ManageExams from "./views/ManageExams.jsx";
+import ExamWorkspace from "./views/ExamWorkspace.jsx";
+import ExamResultView from "./views/ExamResultView.jsx";
 import PasscodeModal from "./components/PasscodeModal.jsx";
 import SetupExaminerModal from "./components/SetupExaminerModal.jsx";
 
@@ -14,6 +16,10 @@ export default function App() {
   const [activeMode, setActiveMode] = useState("candidate"); // 'candidate' or 'examiner'
   const [activeTab, setActiveTab] = useState("dashboard");
   const [editingExamId, setEditingExamId] = useState(null);
+
+  // Active Examination Engine State (Phase 3)
+  const [activeExam, setActiveExam] = useState(null);
+  const [examResult, setExamResult] = useState(null);
 
   // Authentication & Configuration Status
   const [authStatus, setAuthStatus] = useState(null);
@@ -36,12 +42,21 @@ export default function App() {
         const status = await window.examTrace.getExaminerStatus();
         setAuthStatus(status);
 
+        // Phase 3: Renderer Reload Recovery
+        // Check if an examination was already running in Main memory
+        const runningExam = await window.examTrace.getActiveExam();
+        if (runningExam) {
+          console.log("[ExamTrace] Recovering active examination from Main memory:", runningExam.attemptId);
+          setActiveExam(runningExam);
+          return;
+        }
+
         // First-run setup check
         if (!status.isConfigured && !status.recoveryRequired) {
           setIsSetupModalOpen(true);
         }
 
-        // If examiner was unlocked in Main process, sync React state
+        // Sync examiner unlock status
         if (status.isUnlocked) {
           setActiveMode("examiner");
         } else {
@@ -55,7 +70,7 @@ export default function App() {
 
   // Handle switching to Examiner Mode
   function handleRequestExaminerMode() {
-    if (activeMode === "examiner") return;
+    if (activeMode === "examiner" || activeExam) return;
     setIsPasscodeModalOpen(true);
   }
 
@@ -98,6 +113,45 @@ export default function App() {
     setActiveTab("manage-exams");
   }
 
+  // Phase 3: Launch examination workspace
+  function handleBeginActiveExam(examData) {
+    setExamResult(null);
+    setActiveExam(examData);
+  }
+
+  // Phase 3: Examination finished
+  function handleExamSubmitted(result) {
+    setActiveExam(null);
+    setExamResult(result);
+  }
+
+  // 1. If an active examination is in progress, show fullscreen workspace
+  if (activeExam) {
+    return (
+      <ExamWorkspace
+        activeExam={activeExam}
+        onExamSubmitted={handleExamSubmitted}
+      />
+    );
+  }
+
+  // 2. If an examination was just submitted, show results view
+  if (examResult) {
+    return (
+      <div className="app-container" style={{ padding: "32px 48px", overflowY: "auto", display: "block" }}>
+        <ExamResultView
+          result={examResult}
+          onReturnDashboard={() => {
+            setExamResult(null);
+            setActiveTab("dashboard");
+            checkAppStatus();
+          }}
+        />
+      </div>
+    );
+  }
+
+  // 3. Regular Application Shell (Sidebar + Main Content)
   return (
     <div className="app-container">
       {/* Sidebar Navigation */}
@@ -236,7 +290,7 @@ export default function App() {
         </header>
 
         <div className="content-body">
-          {/* Recovery Error Banner (if critical auth file is missing with existing data) */}
+          {/* Recovery Error Banner */}
           {authStatus && authStatus.recoveryRequired && (
             <div className="error-alert" style={{ marginBottom: "8px" }}>
               <strong>⚠️ Authentication Recovery Alert:</strong> {authStatus.errorMessage}
@@ -246,7 +300,10 @@ export default function App() {
           {/* Views Routing */}
           {activeTab === "dashboard" && (
             activeMode === "candidate" ? (
-              <CandidateDashboard onOpenUnlockModal={handleRequestExaminerMode} />
+              <CandidateDashboard
+                onOpenUnlockModal={handleRequestExaminerMode}
+                onBeginActiveExam={handleBeginActiveExam}
+              />
             ) : (
               <ExaminerDashboard
                 onNavigate={(tab) => {

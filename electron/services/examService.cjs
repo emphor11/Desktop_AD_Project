@@ -1,13 +1,19 @@
 // electron/services/examService.cjs
 // Handles examination management (CRUD), initial sample exam seeding,
-// input validation, and answer key sanitization for candidates.
+// candidate examination engine, authoritative timer, answer validation, and score calculation.
 
 const crypto = require("crypto");
 const storageService = require("./storageService.cjs");
 const authService = require("./authService.cjs");
+const timerService = require("./timerService.cjs");
+const { BrowserWindow } = require("electron");
 
 const EXAMS_FILE = "exams.json";
 const INIT_FILE = "app-init.json";
+
+// In-memory active examination attempt (Main process authoritative state)
+let activeAttempt = null;
+let latestFinalizedAttempt = null;
 
 // The 10 built-in, verified Computer Science Fundamentals MCQs
 const SAMPLE_EXAM_QUESTIONS = [
@@ -143,7 +149,6 @@ async function initializeData() {
   if (!isInitialized) {
     const existingExams = storageService.readJsonFile(EXAMS_FILE, null);
 
-    // If exams file doesn't exist, seed the sample exam
     if (!existingExams) {
       const sampleExam = {
         id: "sample-cs-fundamentals",
@@ -161,7 +166,6 @@ async function initializeData() {
       console.log("[ExamService] Built-in sample exam initialized.");
     }
 
-    // Write initialization marker so we never recreate deleted sample exams
     await storageService.writeJsonFile(INIT_FILE, {
       initializedAt: new Date().toISOString(),
       sampleExamSeeded: true,
@@ -184,6 +188,13 @@ function sanitizeQuestionsForCandidate(questions) {
 }
 
 /**
+ * Checks whether an examination attempt is currently in progress.
+ */
+function isExamActive() {
+  return activeAttempt !== null && activeAttempt.status === "in_progress";
+}
+
+/**
  * Gets all exams.
  * If called for Candidate Mode, returns candidate-safe questions without answer keys.
  */
@@ -198,7 +209,8 @@ function getAvailableExams(forCandidate = true) {
       description: exam.description || "",
       durationMinutes: exam.durationMinutes,
       questionCount: exam.questions ? exam.questions.length : 0,
-      createdAt: exam.createdAt
+      createdAt: exam.createdAt,
+      isSample: !!exam.isSample
     }));
   }
 
@@ -227,7 +239,6 @@ function getExamForEditing(examId) {
 
 /**
  * Fetches an internal exam by ID with full question snapshots.
- * Used internally by Main process during exam execution and grading.
  */
 function getInternalExamById(examId) {
   const exams = storageService.readJsonFile(EXAMS_FILE, []);
@@ -284,11 +295,14 @@ function validateExamData(examData) {
 
 /**
  * Saves (creates or updates) an examination.
- * Protected by Main process authorization.
  */
 async function saveExam(examData) {
   if (!authService.isExaminerUnlocked()) {
     throw new Error("Unauthorized: Examiner Mode must be unlocked to save an examination.");
+  }
+
+  if (isExamActive()) {
+    throw new Error("Cannot modify examinations while an examination is currently active.");
   }
 
   validateExamData(examData);
@@ -296,7 +310,6 @@ async function saveExam(examData) {
   const exams = storageService.readJsonFile(EXAMS_FILE, []);
   const now = new Date().toISOString();
 
-  // Clean and prepare questions
   const sanitizedQuestions = examData.questions.map((q) => ({
     id: q.id || crypto.randomUUID(),
     text: q.text.trim(),
@@ -308,7 +321,6 @@ async function saveExam(examData) {
   let savedExam;
 
   if (examData.id) {
-    // Update existing
     const index = exams.findIndex((e) => e.id === examData.id);
     if (index === -1) {
       throw new Error(`Examination with ID '${examData.id}' not found.`);
@@ -326,7 +338,6 @@ async function saveExam(examData) {
 
     exams[index] = savedExam;
   } else {
-    // Create new
     savedExam = {
       id: crypto.randomUUID(),
       title: examData.title.trim(),
@@ -348,12 +359,14 @@ async function saveExam(examData) {
 
 /**
  * Deletes an examination by ID.
- * Protected by Main process authorization.
- * Note: Historical attempts are preserved in attempts.json.
  */
 async function deleteExam(examId) {
   if (!authService.isExaminerUnlocked()) {
     throw new Error("Unauthorized: Examiner Mode must be unlocked to delete an examination.");
+  }
+
+  if (isExamActive()) {
+    throw new Error("Cannot delete examinations while an examination is currently active.");
   }
 
   const exams = storageService.readJsonFile(EXAMS_FILE, []);
@@ -369,12 +382,262 @@ async function deleteExam(examId) {
   return { success: true, message: "Examination deleted successfully." };
 }
 
+// ==========================================
+// PHASE 3: CANDIDATE EXAMINATION ENGINE
+// ==========================================
+
+/**
+ * Starts a timed examination attempt for a candidate.
+ * Strictly rejects if an attempt is already in progress.
+ */
+async function startExam(examId, candidateName) {
+  if (isExamActive()) {
+    throw new Error("An examination is already in progress. Only one active attempt is allowed at a time.");
+  }
+
+  const trimmedName = (candidateName || "").trim();
+  if (!trimmedName) {
+    throw new Error("Candidate display name is required to begin the examination.");
+  }
+
+  const exam = getInternalExamById(examId);
+  if (!exam) {
+    throw new Error(`Examination with ID '${examId}' not found.`);
+  }
+
+  if (!exam.questions || exam.questions.length === 0) {
+    throw new Error("Cannot start an examination with no questions.");
+  }
+
+  const startTime = Date.now();
+  const durationMs = Number(exam.durationMinutes) * 60 * 1000;
+  const deadline = startTime + durationMs;
+
+  activeAttempt = {
+    id: "attempt-" + crypto.randomUUID(),
+    examId: exam.id,
+    candidateName: trimmedName,
+    examSnapshot: JSON.parse(JSON.stringify(exam)), // Internal snapshot with answer keys
+    startedAt: new Date(startTime).toISOString(),
+    endedAt: null,
+    deadline: new Date(deadline).toISOString(),
+    status: "in_progress",
+    answers: {},
+    markedForReview: [],
+    events: [],
+    result: null
+  };
+
+  // Start the authoritative Main-process countdown timer
+  timerService.startTimer(deadline, async () => {
+    console.log("[ExamService] Examination deadline expired. Executing auto-submission...");
+    try {
+      await submitExam("auto");
+    } catch (err) {
+      console.error("[ExamService] Error during auto-submission:", err);
+    }
+  });
+
+  return getActiveExam();
+}
+
+/**
+ * Returns safe examination state for the renderer.
+ * Strictly strips correctAnswer and explanation from question objects.
+ */
+function getActiveExam() {
+  if (!isExamActive()) {
+    return null;
+  }
+
+  const deadlineMs = new Date(activeAttempt.deadline).getTime();
+  const remainingMs = Math.max(0, deadlineMs - Date.now());
+
+  return {
+    attemptId: activeAttempt.id,
+    examId: activeAttempt.examId,
+    candidateName: activeAttempt.candidateName,
+    title: activeAttempt.examSnapshot.title,
+    subject: activeAttempt.examSnapshot.subject,
+    description: activeAttempt.examSnapshot.description,
+    durationMinutes: activeAttempt.examSnapshot.durationMinutes,
+    questions: sanitizeQuestionsForCandidate(activeAttempt.examSnapshot.questions),
+    answers: { ...activeAttempt.answers },
+    markedForReview: [...activeAttempt.markedForReview],
+    startedAt: activeAttempt.startedAt,
+    deadline: activeAttempt.deadline,
+    remainingMs
+  };
+}
+
+/**
+ * Saves a candidate's answer for a question.
+ */
+function saveAnswer(questionId, answerIndex) {
+  if (!isExamActive()) {
+    throw new Error("No active examination attempt in progress.");
+  }
+
+  const deadlineMs = new Date(activeAttempt.deadline).getTime();
+  if (Date.now() >= deadlineMs) {
+    throw new Error("Examination deadline has expired. No further answers can be accepted.");
+  }
+
+  const questionExists = activeAttempt.examSnapshot.questions.some((q) => q.id === questionId);
+  if (!questionExists) {
+    throw new Error(`Question with ID '${questionId}' does not belong to this examination.`);
+  }
+
+  if (answerIndex !== null && answerIndex !== undefined) {
+    const idx = Number(answerIndex);
+    if (isNaN(idx) || idx < 0 || idx > 3) {
+      throw new Error("Answer index must be between 0 and 3.");
+    }
+    activeAttempt.answers[questionId] = idx;
+  } else {
+    delete activeAttempt.answers[questionId];
+  }
+
+  return { success: true, answers: activeAttempt.answers };
+}
+
+/**
+ * Toggles or sets the Marked-for-Review state for a question.
+ */
+function markForReview(questionId, marked) {
+  if (!isExamActive()) {
+    throw new Error("No active examination attempt in progress.");
+  }
+
+  const questionExists = activeAttempt.examSnapshot.questions.some((q) => q.id === questionId);
+  if (!questionExists) {
+    throw new Error(`Question with ID '${questionId}' does not belong to this examination.`);
+  }
+
+  const currentMarks = new Set(activeAttempt.markedForReview);
+
+  if (marked) {
+    currentMarks.add(questionId);
+  } else {
+    currentMarks.delete(questionId);
+  }
+
+  activeAttempt.markedForReview = Array.from(currentMarks);
+
+  return { success: true, markedForReview: activeAttempt.markedForReview };
+}
+
+/**
+ * Submits and finalizes the active examination.
+ * Performs idempotent calculation of results and reveals answer review.
+ */
+async function submitExam(submissionType = "manual") {
+  // Idempotency check: if not in progress, return latest result
+  if (!isExamActive()) {
+    if (latestFinalizedAttempt && latestFinalizedAttempt.result) {
+      return latestFinalizedAttempt.result;
+    }
+    throw new Error("No active examination attempt found to submit.");
+  }
+
+  // Stop authoritative timer
+  timerService.stopTimer();
+
+  const nowIso = new Date().toISOString();
+  activeAttempt.endedAt = nowIso;
+  activeAttempt.status = submissionType === "auto" ? "auto_submitted" : "submitted";
+
+  let score = 0;
+  let correctCount = 0;
+  let incorrectCount = 0;
+  let unansweredCount = 0;
+  const answerReview = [];
+
+  for (const q of activeAttempt.examSnapshot.questions) {
+    const selected = activeAttempt.answers[q.id];
+    const isAnswered = selected !== undefined && selected !== null;
+    const isCorrect = isAnswered && Number(selected) === Number(q.correctAnswer);
+
+    if (!isAnswered) {
+      unansweredCount++;
+    } else if (isCorrect) {
+      score++;
+      correctCount++;
+    } else {
+      incorrectCount++;
+    }
+
+    // Only revealed after submission
+    answerReview.push({
+      questionId: q.id,
+      text: q.text,
+      options: q.options,
+      selectedAnswer: isAnswered ? Number(selected) : null,
+      correctAnswer: q.correctAnswer,
+      isCorrect,
+      explanation: q.explanation || ""
+    });
+  }
+
+  const totalQuestions = activeAttempt.examSnapshot.questions.length;
+  const percentage = totalQuestions > 0 ? Math.round((score / totalQuestions) * 100) : 0;
+  const timeUsedMs = Math.max(0, new Date(activeAttempt.endedAt).getTime() - new Date(activeAttempt.startedAt).getTime());
+
+  const result = {
+    attemptId: activeAttempt.id,
+    examId: activeAttempt.examId,
+    examTitle: activeAttempt.examSnapshot.title,
+    subject: activeAttempt.examSnapshot.subject,
+    candidateName: activeAttempt.candidateName,
+    startedAt: activeAttempt.startedAt,
+    endedAt: activeAttempt.endedAt,
+    submissionType: activeAttempt.status,
+    totalQuestions,
+    answeredCount: totalQuestions - unansweredCount,
+    unansweredCount,
+    correctCount,
+    incorrectCount,
+    score,
+    percentage,
+    timeUsedMs,
+    answerReview
+  };
+
+  activeAttempt.result = result;
+  latestFinalizedAttempt = { ...activeAttempt };
+  activeAttempt = null; // Clear active attempt state
+
+  // Broadcast completion to all open windows (useful for timeout auto-submit)
+  const windows = BrowserWindow.getAllWindows();
+  for (const win of windows) {
+    if (!win.isDestroyed()) {
+      win.webContents.send("exam:completed", result);
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Gets the most recently finalized exam result (for report viewing).
+ */
+function getLatestResult() {
+  return latestFinalizedAttempt ? latestFinalizedAttempt.result : null;
+}
+
 module.exports = {
   initializeData,
   sanitizeQuestionsForCandidate,
+  isExamActive,
   getAvailableExams,
   getExamForEditing,
   getInternalExamById,
   saveExam,
-  deleteExam
+  deleteExam,
+  startExam,
+  getActiveExam,
+  saveAnswer,
+  markForReview,
+  submitExam,
+  getLatestResult
 };

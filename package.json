@@ -13,6 +13,7 @@
     "electron:preview": "vite build && NODE_ENV=production electron .",
     "test:phase1": "electron test/verify_ipc.cjs",
     "test:phase2": "electron test/phase2_test.cjs",
+    "test:phase3": "electron test/phase3_test.cjs",
     "start": "npm run electron:dev"
   },
   "keywords": [

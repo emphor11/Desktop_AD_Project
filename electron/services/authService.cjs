@@ -155,6 +155,12 @@ async function unlockExaminer(passcode) {
     throw new Error(status.errorMessage || "Examiner authentication has not been configured.");
   }
 
+  // Active Examination Restriction
+  const examService = require("./examService.cjs");
+  if (examService.isExamActive()) {
+    throw new Error("Examiner Mode cannot be unlocked while an examination is currently in progress.");
+  }
+
   if (!passcode || typeof passcode !== "string") {
     throw new Error("Passcode cannot be empty.");
   }

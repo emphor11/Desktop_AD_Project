@@ -2,12 +2,13 @@
 // Main screen for candidates to browse and launch examinations.
 
 import React, { useState, useEffect } from "react";
+import CandidateStartModal from "../components/CandidateStartModal.jsx";
 
-export default function CandidateDashboard({ onOpenUnlockModal }) {
+export default function CandidateDashboard({ onOpenUnlockModal, onBeginActiveExam }) {
   const [exams, setExams] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
-  const [launchMessage, setLaunchMessage] = useState("");
+  const [selectedExamForStart, setSelectedExamForStart] = useState(null);
 
   useEffect(() => {
     loadExams();
@@ -26,9 +27,10 @@ export default function CandidateDashboard({ onOpenUnlockModal }) {
     }
   }
 
-  function handleStartExam(exam) {
-    setLaunchMessage(`Exam '${exam.title}' selected. Candidate identification and live monitoring workspace will start in Phase 3!`);
-    setTimeout(() => setLaunchMessage(""), 5000);
+  async function handleConfirmStart(examId, candidateName) {
+    const activeData = await window.examTrace.startExam(examId, candidateName);
+    setSelectedExamForStart(null);
+    onBeginActiveExam(activeData);
   }
 
   return (
@@ -46,12 +48,6 @@ export default function CandidateDashboard({ onOpenUnlockModal }) {
           <span>🔒</span> Examiner Login
         </button>
       </div>
-
-      {launchMessage && (
-        <div className="info-alert" style={{ marginTop: "16px" }}>
-          <span>ℹ️</span> {launchMessage}
-        </div>
-      )}
 
       {error && <div className="error-alert" style={{ marginTop: "16px" }}>{error}</div>}
 
@@ -94,7 +90,7 @@ export default function CandidateDashboard({ onOpenUnlockModal }) {
                   <button
                     className="btn btn-primary"
                     style={{ width: "100%" }}
-                    onClick={() => handleStartExam(exam)}
+                    onClick={() => setSelectedExamForStart(exam)}
                   >
                     Start Examination
                   </button>
@@ -104,6 +100,14 @@ export default function CandidateDashboard({ onOpenUnlockModal }) {
           </div>
         )}
       </section>
+
+      {/* Candidate Start Modal */}
+      <CandidateStartModal
+        exam={selectedExamForStart}
+        isOpen={!!selectedExamForStart}
+        onClose={() => setSelectedExamForStart(null)}
+        onStart={handleConfirmStart}
+      />
     </div>
   );
 }

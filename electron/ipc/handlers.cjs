@@ -60,6 +60,31 @@ function registerIpcHandlers() {
   ipcMain.handle("exam:delete", async (event, examId) => {
     return await examService.deleteExam(examId);
   });
+
+  // Phase 3: Active Examination Engine APIs
+  ipcMain.handle("exam:start", async (event, payload) => {
+    return await examService.startExam(payload.examId, payload.candidateName);
+  });
+
+  ipcMain.handle("exam:getActive", async () => {
+    return examService.getActiveExam();
+  });
+
+  ipcMain.handle("exam:saveAnswer", async (event, payload) => {
+    return examService.saveAnswer(payload.questionId, payload.answerIndex);
+  });
+
+  ipcMain.handle("exam:markForReview", async (event, payload) => {
+    return examService.markForReview(payload.questionId, payload.marked);
+  });
+
+  ipcMain.handle("exam:submit", async () => {
+    return await examService.submitExam("manual");
+  });
+
+  ipcMain.handle("exam:getLatestResult", async () => {
+    return examService.getLatestResult();
+  });
 }
 
 module.exports = {
