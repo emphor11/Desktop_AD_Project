@@ -1239,3 +1239,86 @@ body {
   background-color: rgba(245, 158, 11, 0.2);
   border-color: var(--color-warning);
 }
+
+/* ==========================================================
+   PHASE 4: REAL-TIME MONITORING & TIMELINE STYLES
+   ========================================================== */
+
+.fullscreen-warning-banner {
+  background-color: rgba(245, 158, 11, 0.2);
+  border: 1px solid rgba(245, 158, 11, 0.5);
+  color: #fbbf24;
+  padding: 10px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 600;
+  animation: modalIn 0.2s ease-out;
+}
+
+.monitoring-live-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 32px;
+  background-color: rgba(15, 23, 42, 0.95);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+  padding: 10px 18px;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  z-index: 999;
+  animation: modalIn 0.15s ease-out;
+}
+
+.toast-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--color-warning);
+  box-shadow: 0 0 6px var(--color-warning);
+}
+
+.toast-type {
+  font-weight: 700;
+  color: #fbbf24;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.toast-reason {
+  color: var(--color-text-main);
+}
+
+.tab-pill-container {
+  display: flex;
+  gap: 8px;
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 8px;
+}
+
+.tab-pill {
+  padding: 8px 18px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--color-text-muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.tab-pill:hover {
+  background-color: var(--color-bg-surface);
+  color: var(--color-text-main);
+}
+
+.tab-pill.active {
+  background-color: var(--color-primary-subtle);
+  color: var(--color-primary);
+  border-color: rgba(59, 130, 246, 0.3);
+}

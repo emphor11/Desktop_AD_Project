@@ -30,6 +30,12 @@ contextBridge.exposeInMainWorld("examTrace", {
   submitExam: () => ipcRenderer.invoke("exam:submit"),
   getLatestResult: () => ipcRenderer.invoke("exam:getLatestResult"),
 
+  // Phase 4: Desktop Activity Monitoring
+  getMonitoringDemoMode: () => ipcRenderer.invoke("monitoring:getDemoMode"),
+  setMonitoringDemoMode: (enabled) => ipcRenderer.invoke("monitoring:setDemoMode", enabled),
+  getMonitoringState: () => ipcRenderer.invoke("monitoring:getState"),
+  setFullScreen: (enabled) => ipcRenderer.invoke("window:setFullScreen", enabled),
+
   // Event Subscriptions with unbind handlers
   onTimerUpdate: (callback) => {
     const handler = (event, data) => callback(data);
@@ -40,5 +46,15 @@ contextBridge.exposeInMainWorld("examTrace", {
     const handler = (event, data) => callback(data);
     ipcRenderer.on("exam:completed", handler);
     return () => ipcRenderer.removeListener("exam:completed", handler);
+  },
+  onMonitoringEvent: (callback) => {
+    const handler = (event, data) => callback(data);
+    ipcRenderer.on("monitoring:event", handler);
+    return () => ipcRenderer.removeListener("monitoring:event", handler);
+  },
+  onFullscreenWarning: (callback) => {
+    const handler = (event, data) => callback(data);
+    ipcRenderer.on("monitoring:fullscreenWarning", handler);
+    return () => ipcRenderer.removeListener("monitoring:fullscreenWarning", handler);
   }
 });

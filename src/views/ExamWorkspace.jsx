@@ -1,6 +1,7 @@
 // src/views/ExamWorkspace.jsx
 // Distraction-free, timed examination workspace with authoritative countdown timer,
-// question palette, answer selection, review marking, and in-app submission modal.
+// question palette, answer selection, review marking, in-app submission modal,
+// and real-time desktop activity monitoring indicators.
 
 import React, { useState, useEffect } from "react";
 
@@ -14,36 +15,89 @@ export default function ExamWorkspace({ activeExam, onExamSubmitted }) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
 
+  // Phase 4: Monitoring State
+  const [recentEvent, setRecentEvent] = useState(null);
+  const [eventCount, setEventCount] = useState(1); // includes EXAM_STARTED
+  const [fullscreenWarning, setFullscreenWarning] = useState("");
+  const [isDemoMode, setIsDemoMode] = useState(false);
+
   const questions = activeExam?.questions || [];
   const currentQuestion = questions[currentIdx] || null;
 
-  // Subscribe to authoritative timer broadcasts from Electron Main
+  // Initialize monitoring status & subscribe to real-time events
   useEffect(() => {
+    // Check initial demo mode
+    async function initMonitoringState() {
+      try {
+        const demo = await window.examTrace.getMonitoringDemoMode();
+        setIsDemoMode(demo);
+      } catch (_) {}
+    }
+    initMonitoringState();
+
+    // 1. Authoritative timer ticks from Main
     const unsubscribeTimer = window.examTrace.onTimerUpdate((tick) => {
       setTimerText(tick.formattedTime);
       setRemainingSeconds(tick.remainingSeconds);
     });
 
+    // 2. Exam completed broadcast (e.g. timeout auto-submit)
     const unsubscribeCompleted = window.examTrace.onExamCompleted((result) => {
-      // Auto-submit or remote finalization triggered by Main
       onExamSubmitted(result);
+    });
+
+    // 3. Real-time monitoring activity events
+    const unsubscribeMonitoring = window.examTrace.onMonitoringEvent((event) => {
+      setRecentEvent(event);
+      setEventCount((prev) => prev + 1);
+
+      // Clear event toast after 4 seconds
+      setTimeout(() => {
+        setRecentEvent((current) => (current && current.id === event.id ? null : current));
+      }, 4000);
+    });
+
+    // 4. Fullscreen exit warning
+    const unsubscribeFullscreen = window.examTrace.onFullscreenWarning((data) => {
+      setFullscreenWarning(data.message || "Fullscreen exit detected. Please return to fullscreen.");
     });
 
     return () => {
       unsubscribeTimer();
       unsubscribeCompleted();
+      unsubscribeMonitoring();
+      unsubscribeFullscreen();
     };
   }, [onExamSubmitted]);
+
+  // Handle Demo Mode toggle (10s idle threshold vs 60s)
+  async function handleToggleDemoMode() {
+    try {
+      const next = !isDemoMode;
+      await window.examTrace.setMonitoringDemoMode(next);
+      setIsDemoMode(next);
+    } catch (err) {
+      console.error("Failed to toggle Demo Mode:", err);
+    }
+  }
+
+  // Handle Return to Fullscreen
+  async function handleEnterFullscreen() {
+    try {
+      await window.examTrace.setFullScreen(true);
+      setFullscreenWarning("");
+    } catch (err) {
+      console.error("Failed to enter fullscreen:", err);
+    }
+  }
 
   // Handle option selection
   async function handleSelectOption(optIndex) {
     if (!currentQuestion) return;
 
     const qId = currentQuestion.id;
-    // Toggle off if already selected, or select new
     const newAnswer = answers[qId] === optIndex ? null : optIndex;
 
-    // Optimistically update React state
     const nextAnswers = { ...answers };
     if (newAnswer !== null) {
       nextAnswers[qId] = newAnswer;
@@ -98,11 +152,9 @@ export default function ExamWorkspace({ activeExam, onExamSubmitted }) {
     }
   }
 
-  // Calculate summary counts for palette & submission modal
   const answeredCount = Object.keys(answers).length;
   const unansweredCount = Math.max(0, questions.length - answeredCount);
   const reviewCount = markedForReview.length;
-
   const isLowTime = remainingSeconds <= 60 && remainingSeconds > 0;
 
   return (
@@ -123,7 +175,20 @@ export default function ExamWorkspace({ activeExam, onExamSubmitted }) {
         </div>
 
         <div className="workspace-actions">
-          <span className="monitored-badge">● Active Monitoring</span>
+          {/* Demo Mode Toggle Button (10s inactivity) */}
+          <button
+            className={`btn btn-sm ${isDemoMode ? "btn-warning" : "btn-secondary"}`}
+            onClick={handleToggleDemoMode}
+            title="Toggles 10s idle threshold for live viva demonstration"
+          >
+            {isDemoMode ? "⚡ Demo Mode: 10s Idle" : "Demo Mode: Off"}
+          </button>
+
+          {/* Monitoring State Badge */}
+          <span className="monitored-badge" title="Monitors focus, minimize, fullscreen, and idle time">
+            ● Active Monitoring ({eventCount})
+          </span>
+
           <button
             className="btn btn-primary"
             onClick={() => setIsSubmitModalOpen(true)}
@@ -133,6 +198,25 @@ export default function ExamWorkspace({ activeExam, onExamSubmitted }) {
           </button>
         </div>
       </header>
+
+      {/* Fullscreen Exit Warning Banner */}
+      {fullscreenWarning && (
+        <div className="fullscreen-warning-banner">
+          <span>⚠️ {fullscreenWarning}</span>
+          <button className="btn btn-sm btn-warning" onClick={handleEnterFullscreen}>
+            Return to Fullscreen
+          </button>
+        </div>
+      )}
+
+      {/* Live Monitoring Toast */}
+      {recentEvent && (
+        <div className="monitoring-live-toast">
+          <span className="toast-dot" />
+          <span className="toast-type">[{recentEvent.type}]:</span>
+          <span className="toast-reason">{recentEvent.reason}</span>
+        </div>
+      )}
 
       {errorMsg && (
         <div className="error-alert" style={{ margin: "12px 24px 0" }}>
@@ -283,7 +367,7 @@ export default function ExamWorkspace({ activeExam, onExamSubmitted }) {
         </aside>
       </div>
 
-      {/* In-App Submission Modal (React-only to prevent false window blur) */}
+      {/* In-App Submission Modal */}
       {isSubmitModalOpen && (
         <div className="modal-backdrop">
           <div className="modal-card">

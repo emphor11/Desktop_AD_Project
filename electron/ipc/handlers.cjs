@@ -2,9 +2,10 @@
 // Centralized IPC communication dispatcher.
 // Implements strict Main-process authorization checks for examiner actions.
 
-const { ipcMain, app } = require("electron");
+const { ipcMain, app, BrowserWindow } = require("electron");
 const authService = require("../services/authService.cjs");
 const examService = require("../services/examService.cjs");
+const monitoringService = require("../services/monitoringService.cjs");
 
 function registerIpcHandlers() {
   // App Diagnostics & Ping
@@ -84,6 +85,28 @@ function registerIpcHandlers() {
 
   ipcMain.handle("exam:getLatestResult", async () => {
     return examService.getLatestResult();
+  });
+
+  // Phase 4: Desktop Activity Monitoring APIs
+  ipcMain.handle("monitoring:getDemoMode", async () => {
+    return monitoringService.getDemoMode();
+  });
+
+  ipcMain.handle("monitoring:setDemoMode", async (event, enabled) => {
+    return monitoringService.setDemoMode(enabled);
+  });
+
+  ipcMain.handle("monitoring:getState", async () => {
+    return monitoringService.getCurrentMonitoringState();
+  });
+
+  ipcMain.handle("window:setFullScreen", async (event, enabled) => {
+    const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+    if (win) {
+      win.setFullScreen(!!enabled);
+      return { isFullScreen: win.isFullScreen() };
+    }
+    return { isFullScreen: false };
   });
 }
 

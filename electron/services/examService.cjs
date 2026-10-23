@@ -6,6 +6,7 @@ const crypto = require("crypto");
 const storageService = require("./storageService.cjs");
 const authService = require("./authService.cjs");
 const timerService = require("./timerService.cjs");
+const monitoringService = require("./monitoringService.cjs");
 const { BrowserWindow } = require("electron");
 
 const EXAMS_FILE = "exams.json";
@@ -428,6 +429,12 @@ async function startExam(examId, candidateName) {
     result: null
   };
 
+  // Start real desktop activity monitoring on the active window
+  const activeWin = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+  if (activeWin) {
+    monitoringService.startMonitoring(activeWin);
+  }
+
   // Start the authoritative Main-process countdown timer
   timerService.startTimer(deadline, async () => {
     console.log("[ExamService] Examination deadline expired. Executing auto-submission...");
@@ -466,7 +473,8 @@ function getActiveExam() {
     markedForReview: [...activeAttempt.markedForReview],
     startedAt: activeAttempt.startedAt,
     deadline: activeAttempt.deadline,
-    remainingMs
+    remainingMs,
+    monitoringState: monitoringService.getCurrentMonitoringState()
   };
 }
 
@@ -540,12 +548,27 @@ async function submitExam(submissionType = "manual") {
     throw new Error("No active examination attempt found to submit.");
   }
 
-  // Stop authoritative timer
+  // Stop authoritative timer & stop monitoring
   timerService.stopTimer();
+  const monitoringFinal = monitoringService.stopMonitoring();
 
   const nowIso = new Date().toISOString();
   activeAttempt.endedAt = nowIso;
   activeAttempt.status = submissionType === "auto" ? "auto_submitted" : "submitted";
+
+  // Record submission event
+  const submitEventType = submissionType === "auto" ? "EXAM_AUTO_SUBMITTED" : "EXAM_SUBMITTED";
+  const submitReason = submissionType === "auto"
+    ? "Examination countdown timer expired. System automatically finalized the exam."
+    : "Candidate manually confirmed and submitted the examination.";
+
+  monitoringFinal.events.push({
+    id: "event-" + crypto.randomUUID(),
+    type: submitEventType,
+    timestamp: nowIso,
+    reason: submitReason,
+    metadata: {}
+  });
 
   let score = 0;
   let correctCount = 0;
@@ -600,7 +623,9 @@ async function submitExam(submissionType = "manual") {
     score,
     percentage,
     timeUsedMs,
-    answerReview
+    answerReview,
+    monitoringSummary: monitoringFinal.summary,
+    monitoringEvents: monitoringFinal.events
   };
 
   activeAttempt.result = result;

@@ -14,6 +14,7 @@
     "test:phase1": "electron test/verify_ipc.cjs",
     "test:phase2": "electron test/phase2_test.cjs",
     "test:phase3": "electron test/phase3_test.cjs",
+    "test:phase4": "electron test/phase4_test.cjs",
     "start": "npm run electron:dev"
   },
   "keywords": [
