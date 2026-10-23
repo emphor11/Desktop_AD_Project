@@ -7,10 +7,13 @@ const storageService = require("./storageService.cjs");
 const authService = require("./authService.cjs");
 const timerService = require("./timerService.cjs");
 const monitoringService = require("./monitoringService.cjs");
+const notificationService = require("./notificationService.cjs");
 const { BrowserWindow } = require("electron");
 
 const EXAMS_FILE = "exams.json";
 const INIT_FILE = "app-init.json";
+const ATTEMPTS_FILE = "attempts.json";
+const ACTIVE_ATTEMPT_FILE = "active-attempt.json";
 
 // In-memory active examination attempt (Main process authoritative state)
 let activeAttempt = null;
@@ -384,8 +387,21 @@ async function deleteExam(examId) {
 }
 
 // ==========================================
-// PHASE 3: CANDIDATE EXAMINATION ENGINE
+// PHASE 3 & PHASE 5: EXAMINATION ENGINE & CHECKPOINTING
 // ==========================================
+
+/**
+ * Asynchronously persists the in-progress attempt checkpoint.
+ */
+async function checkpointActiveAttempt() {
+  if (activeAttempt && activeAttempt.status === "in_progress") {
+    try {
+      await storageService.writeJsonFile(ACTIVE_ATTEMPT_FILE, activeAttempt);
+    } catch (err) {
+      console.error("[ExamService] Checkpoint write failed:", err);
+    }
+  }
+}
 
 /**
  * Starts a timed examination attempt for a candidate.
@@ -444,6 +460,9 @@ async function startExam(examId, candidateName) {
       console.error("[ExamService] Error during auto-submission:", err);
     }
   });
+
+  // Checkpoint in-progress examination to active-attempt.json
+  await checkpointActiveAttempt();
 
   return getActiveExam();
 }
@@ -506,6 +525,9 @@ function saveAnswer(questionId, answerIndex) {
     delete activeAttempt.answers[questionId];
   }
 
+  // Update checkpoint asynchronously
+  checkpointActiveAttempt();
+
   return { success: true, answers: activeAttempt.answers };
 }
 
@@ -531,6 +553,9 @@ function markForReview(questionId, marked) {
   }
 
   activeAttempt.markedForReview = Array.from(currentMarks);
+
+  // Update checkpoint asynchronously
+  checkpointActiveAttempt();
 
   return { success: true, markedForReview: activeAttempt.markedForReview };
 }
@@ -630,7 +655,28 @@ async function submitExam(submissionType = "manual") {
 
   activeAttempt.result = result;
   latestFinalizedAttempt = { ...activeAttempt };
+
+  // Phase 5: Persist finalized attempt to attempts.json atomically
+  try {
+    const attempts = storageService.readJsonFile(ATTEMPTS_FILE, []);
+    if (!attempts.some((a) => a.id === latestFinalizedAttempt.id)) {
+      attempts.push(latestFinalizedAttempt);
+      await storageService.writeJsonFile(ATTEMPTS_FILE, attempts);
+    }
+    // Delete in-progress checkpoint
+    storageService.deleteFile(ACTIVE_ATTEMPT_FILE);
+  } catch (err) {
+    console.error("[ExamService] Failed to persist attempt to attempts.json:", err);
+  }
+
   activeAttempt = null; // Clear active attempt state
+
+  // Trigger native desktop notification
+  const notifTitle = submissionType === "auto" ? "ExamTrace — Time Expired" : "ExamTrace — Exam Submitted";
+  const notifBody = submissionType === "auto"
+    ? `Examination deadline expired. Final score: ${score}/${totalQuestions} (${percentage}%)`
+    : `Submitted successfully! Final score: ${score}/${totalQuestions} (${percentage}%)`;
+  notificationService.showNotification(notifTitle, notifBody);
 
   // Broadcast completion to all open windows (useful for timeout auto-submit)
   const windows = BrowserWindow.getAllWindows();
@@ -650,6 +696,325 @@ function getLatestResult() {
   return latestFinalizedAttempt ? latestFinalizedAttempt.result : null;
 }
 
+// ==========================================
+// PHASE 5: DURABLE HISTORY & RESTART RECOVERY
+// ==========================================
+
+/**
+ * Restores an unfinished attempt after an application restart,
+ * or finalizes it once as auto_submitted if the deadline expired while closed.
+ */
+async function restoreActiveAttemptOrFinalize() {
+  if (!storageService.fileExists(ACTIVE_ATTEMPT_FILE)) {
+    return null;
+  }
+
+  let checkpoint;
+  try {
+    checkpoint = storageService.readJsonFile(ACTIVE_ATTEMPT_FILE);
+  } catch (err) {
+    console.error("[ExamService] Corrupted active attempt checkpoint:", err);
+    storageService.deleteFile(ACTIVE_ATTEMPT_FILE);
+    return null;
+  }
+
+  if (!checkpoint || !checkpoint.deadline || checkpoint.status !== "in_progress") {
+    storageService.deleteFile(ACTIVE_ATTEMPT_FILE);
+    return null;
+  }
+
+  const deadlineMs = new Date(checkpoint.deadline).getTime();
+  const now = Date.now();
+
+  // Scenario A: Deadline expired while application was closed
+  if (now >= deadlineMs) {
+    console.log("[ExamService] Recovering expired attempt from restart. Finalizing as auto_submitted...");
+
+    let score = 0;
+    let correctCount = 0;
+    let incorrectCount = 0;
+    let unansweredCount = 0;
+    const answerReview = [];
+
+    for (const q of checkpoint.examSnapshot.questions) {
+      const selected = checkpoint.answers ? checkpoint.answers[q.id] : undefined;
+      const isAnswered = selected !== undefined && selected !== null;
+      const isCorrect = isAnswered && Number(selected) === Number(q.correctAnswer);
+
+      if (!isAnswered) {
+        unansweredCount++;
+      } else if (isCorrect) {
+        score++;
+        correctCount++;
+      } else {
+        incorrectCount++;
+      }
+
+      answerReview.push({
+        questionId: q.id,
+        text: q.text,
+        options: q.options,
+        selectedAnswer: isAnswered ? Number(selected) : null,
+        correctAnswer: q.correctAnswer,
+        isCorrect,
+        explanation: q.explanation || ""
+      });
+    }
+
+    const totalQuestions = checkpoint.examSnapshot.questions.length;
+    const percentage = totalQuestions > 0 ? Math.round((score / totalQuestions) * 100) : 0;
+    const timeUsedMs = Math.max(0, deadlineMs - new Date(checkpoint.startedAt).getTime());
+
+    // Factual closure event without inventing gap activity
+    const finalEvents = Array.isArray(checkpoint.events) ? [...checkpoint.events] : [];
+    finalEvents.push({
+      id: "event-" + crypto.randomUUID(),
+      type: "APPLICATION_CLOSED_EXPIRATION",
+      timestamp: checkpoint.deadline,
+      reason: "Examination deadline expired while application was closed. Finalized upon reopening.",
+      metadata: {}
+    });
+
+    const focusCount = finalEvents.filter((e) => e.type === "WINDOW_BLUR").length;
+    const fsExitCount = finalEvents.filter((e) => e.type === "FULLSCREEN_EXIT").length;
+    const idleCount = finalEvents.filter((e) => e.type === "SYSTEM_IDLE").length;
+
+    const result = {
+      attemptId: checkpoint.id,
+      examId: checkpoint.examId,
+      examTitle: checkpoint.examSnapshot.title,
+      subject: checkpoint.examSnapshot.subject,
+      candidateName: checkpoint.candidateName,
+      startedAt: checkpoint.startedAt,
+      endedAt: checkpoint.deadline,
+      submissionType: "auto_submitted",
+      totalQuestions,
+      answeredCount: totalQuestions - unansweredCount,
+      unansweredCount,
+      correctCount,
+      incorrectCount,
+      score,
+      percentage,
+      timeUsedMs,
+      answerReview,
+      monitoringSummary: {
+        totalEventsCount: finalEvents.length,
+        focusDeparturesCount: focusCount,
+        fullscreenExitsCount: fsExitCount,
+        idleEventsCount: idleCount,
+        totalUnfocusedTimeMs: 0,
+        totalUnfocusedTimeSeconds: 0,
+        totalIdleTimeMs: 0,
+        totalIdleTimeSeconds: 0
+      },
+      monitoringEvents: finalEvents
+    };
+
+    const finalizedRecord = {
+      ...checkpoint,
+      endedAt: checkpoint.deadline,
+      status: "auto_submitted",
+      result
+    };
+
+    const attempts = storageService.readJsonFile(ATTEMPTS_FILE, []);
+    if (!attempts.some((a) => a.id === finalizedRecord.id)) {
+      attempts.push(finalizedRecord);
+      await storageService.writeJsonFile(ATTEMPTS_FILE, attempts);
+    }
+
+    storageService.deleteFile(ACTIVE_ATTEMPT_FILE);
+    latestFinalizedAttempt = finalizedRecord;
+    return result;
+  }
+
+  // Scenario B: Deadline is still valid!
+  console.log(`[ExamService] Restoring valid active exam from checkpoint: ${checkpoint.id}`);
+  activeAttempt = checkpoint;
+
+  // Restart authoritative countdown
+  timerService.startTimer(deadlineMs, async () => {
+    console.log("[ExamService] Restored exam deadline expired. Finalizing auto-submit...");
+    try {
+      await submitExam("auto");
+    } catch (err) {
+      console.error("[ExamService] Error during auto-submit of restored attempt:", err);
+    }
+  });
+
+  // Resume monitoring
+  const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+  if (win) {
+    monitoringService.startMonitoring(win);
+  }
+
+  return getActiveExam();
+}
+
+/**
+ * Gets shared local examination history.
+ */
+function getExamHistory() {
+  const attempts = storageService.readJsonFile(ATTEMPTS_FILE, []);
+  if (!Array.isArray(attempts)) return [];
+
+  return attempts
+    .map((attempt) => {
+      const res = attempt.result || {};
+      return {
+        id: attempt.id,
+        examId: attempt.examId,
+        examTitle: res.examTitle || (attempt.examSnapshot && attempt.examSnapshot.title) || "Examination",
+        subject: res.subject || (attempt.examSnapshot && attempt.examSnapshot.subject) || "General",
+        candidateName: attempt.candidateName || "Candidate",
+        startedAt: attempt.startedAt,
+        endedAt: attempt.endedAt,
+        score: res.score !== undefined ? res.score : 0,
+        totalQuestions: res.totalQuestions || 0,
+        percentage: res.percentage !== undefined ? res.percentage : 0,
+        submissionType: attempt.status || "submitted",
+        eventsCount: (res.monitoringEvents && res.monitoringEvents.length) || 0
+      };
+    })
+    .sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
+}
+
+/**
+ * Fetches an attempt report using its frozen historical snapshot.
+ */
+function getExamReport(attemptId) {
+  if (latestFinalizedAttempt && latestFinalizedAttempt.id === attemptId && latestFinalizedAttempt.result) {
+    return latestFinalizedAttempt.result;
+  }
+
+  const attempts = storageService.readJsonFile(ATTEMPTS_FILE, []);
+  const found = attempts.find((a) => a.id === attemptId);
+
+  if (!found) {
+    throw new Error(`Examination attempt with ID '${attemptId}' not found.`);
+  }
+
+  return found.result || found;
+}
+
+/**
+ * Calculates aggregate class performance and monitoring statistics.
+ * Protected by Main-process authorization.
+ */
+function getAnalytics() {
+  if (!authService.isExaminerUnlocked()) {
+    throw new Error("Unauthorized: Examiner Mode must be unlocked to view performance analytics.");
+  }
+
+  const attempts = storageService.readJsonFile(ATTEMPTS_FILE, []);
+
+  if (!Array.isArray(attempts) || attempts.length === 0) {
+    return {
+      totalAttempts: 0,
+      averageScore: 0,
+      averagePercentage: 0,
+      highestScore: 0,
+      lowestScore: 0,
+      passCount: 0,
+      failCount: 0,
+      passRate: 0,
+      totalFocusDepartures: 0,
+      totalFullscreenExits: 0,
+      totalIdleEvents: 0,
+      distribution: [
+        { label: "0-20%", count: 0 },
+        { label: "21-40%", count: 0 },
+        { label: "41-60%", count: 0 },
+        { label: "61-80%", count: 0 },
+        { label: "81-100%", count: 0 }
+      ],
+      recentAttempts: []
+    };
+  }
+
+  const totalAttempts = attempts.length;
+  let totalScore = 0;
+  let totalPercentage = 0;
+  let highestScore = -Infinity;
+  let lowestScore = Infinity;
+  let passCount = 0;
+
+  let totalFocusDepartures = 0;
+  let totalFullscreenExits = 0;
+  let totalIdleEvents = 0;
+
+  const distribution = [
+    { label: "0-20%", count: 0 },
+    { label: "21-40%", count: 0 },
+    { label: "41-60%", count: 0 },
+    { label: "61-80%", count: 0 },
+    { label: "81-100%", count: 0 }
+  ];
+
+  for (const a of attempts) {
+    const res = a.result || {};
+    const sc = res.score !== undefined ? Number(res.score) : 0;
+    const pct = res.percentage !== undefined ? Number(res.percentage) : 0;
+
+    totalScore += sc;
+    totalPercentage += pct;
+
+    if (sc > highestScore) highestScore = sc;
+    if (sc < lowestScore) lowestScore = sc;
+
+    if (pct >= 60) {
+      passCount++;
+    }
+
+    if (pct <= 20) distribution[0].count++;
+    else if (pct <= 40) distribution[1].count++;
+    else if (pct <= 60) distribution[2].count++;
+    else if (pct <= 80) distribution[3].count++;
+    else distribution[4].count++;
+
+    const mSum = res.monitoringSummary || {};
+    totalFocusDepartures += mSum.focusDeparturesCount || 0;
+    totalFullscreenExits += mSum.fullscreenExitsCount || 0;
+    totalIdleEvents += mSum.idleEventsCount || 0;
+  }
+
+  const averageScore = Number((totalScore / totalAttempts).toFixed(1));
+  const averagePercentage = Math.round(totalPercentage / totalAttempts);
+  const passRate = Math.round((passCount / totalAttempts) * 100);
+
+  const recentAttempts = attempts
+    .map((a) => {
+      const r = a.result || {};
+      return {
+        id: a.id,
+        candidateName: a.candidateName || "Candidate",
+        examTitle: r.examTitle || (a.examSnapshot && a.examSnapshot.title) || "Examination",
+        score: r.score !== undefined ? r.score : 0,
+        totalQuestions: r.totalQuestions || 0,
+        percentage: r.percentage !== undefined ? r.percentage : 0,
+        startedAt: a.startedAt
+      };
+    })
+    .sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime())
+    .slice(0, 5);
+
+  return {
+    totalAttempts,
+    averageScore,
+    averagePercentage,
+    highestScore: highestScore === -Infinity ? 0 : highestScore,
+    lowestScore: lowestScore === Infinity ? 0 : lowestScore,
+    passCount,
+    failCount: totalAttempts - passCount,
+    passRate,
+    totalFocusDepartures,
+    totalFullscreenExits,
+    totalIdleEvents,
+    distribution,
+    recentAttempts
+  };
+}
+
 module.exports = {
   initializeData,
   sanitizeQuestionsForCandidate,
@@ -664,5 +1029,9 @@ module.exports = {
   saveAnswer,
   markForReview,
   submitExam,
-  getLatestResult
+  getLatestResult,
+  restoreActiveAttemptOrFinalize,
+  getExamHistory,
+  getExamReport,
+  getAnalytics
 };

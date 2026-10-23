@@ -6,6 +6,7 @@ const { ipcMain, app, BrowserWindow } = require("electron");
 const authService = require("../services/authService.cjs");
 const examService = require("../services/examService.cjs");
 const monitoringService = require("../services/monitoringService.cjs");
+const settingsService = require("../services/settingsService.cjs");
 
 function registerIpcHandlers() {
   // App Diagnostics & Ping
@@ -87,6 +88,15 @@ function registerIpcHandlers() {
     return examService.getLatestResult();
   });
 
+  // Phase 5: Historical Attempts & Reports APIs
+  ipcMain.handle("exam:getHistory", async () => {
+    return examService.getExamHistory();
+  });
+
+  ipcMain.handle("exam:getReport", async (event, attemptId) => {
+    return examService.getExamReport(attemptId);
+  });
+
   // Phase 4: Desktop Activity Monitoring APIs
   ipcMain.handle("monitoring:getDemoMode", async () => {
     return monitoringService.getDemoMode();
@@ -107,6 +117,19 @@ function registerIpcHandlers() {
       return { isFullScreen: win.isFullScreen() };
     }
     return { isFullScreen: false };
+  });
+
+  // Phase 6: Analytics & Settings APIs
+  ipcMain.handle("analytics:get", async () => {
+    return examService.getAnalytics();
+  });
+
+  ipcMain.handle("settings:get", async () => {
+    return settingsService.getSettings();
+  });
+
+  ipcMain.handle("settings:save", async (event, settings) => {
+    return await settingsService.saveSettings(settings);
   });
 }
 

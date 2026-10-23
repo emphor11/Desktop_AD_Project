@@ -58,8 +58,10 @@ app.whenReady().then(async () => {
   // Initialize data (built-in sample exam) on first run
   try {
     await examService.initializeData();
+    // Phase 5: Check and recover active attempt or finalize expired exam after restart
+    await examService.restoreActiveAttemptOrFinalize();
   } catch (err) {
-    console.error("[ExamTrace] Data initialization failed:", err);
+    console.error("[ExamTrace] Data initialization or recovery failed:", err);
   }
 
   createWindow();

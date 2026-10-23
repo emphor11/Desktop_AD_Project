@@ -1,6 +1,6 @@
 // src/App.jsx
 // Root application component managing mode navigation, authentication lifecycle,
-// active examination workspace, and results reporting for ExamTrace.
+// active examination workspace, results reporting, analytics, and application settings.
 
 import React, { useState, useEffect } from "react";
 import CandidateDashboard from "./views/CandidateDashboard.jsx";
@@ -9,6 +9,9 @@ import ExamCreator from "./views/ExamCreator.jsx";
 import ManageExams from "./views/ManageExams.jsx";
 import ExamWorkspace from "./views/ExamWorkspace.jsx";
 import ExamResultView from "./views/ExamResultView.jsx";
+import HistoryView from "./views/HistoryView.jsx";
+import AnalyticsView from "./views/AnalyticsView.jsx";
+import SettingsView from "./views/SettingsView.jsx";
 import PasscodeModal from "./components/PasscodeModal.jsx";
 import SetupExaminerModal from "./components/SetupExaminerModal.jsx";
 
@@ -36,17 +39,29 @@ export default function App() {
   async function checkAppStatus() {
     try {
       if (window.examTrace) {
+        // Load & apply saved theme setting
+        try {
+          const s = await window.examTrace.getSettings();
+          if (s && s.theme) {
+            if (s.theme === "system") {
+              const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+              document.documentElement.setAttribute("data-theme", prefersDark ? "dark" : "light");
+            } else {
+              document.documentElement.setAttribute("data-theme", s.theme);
+            }
+          }
+        } catch (_) {}
+
         const info = await window.examTrace.ping();
         setSystemInfo(info);
 
         const status = await window.examTrace.getExaminerStatus();
         setAuthStatus(status);
 
-        // Phase 3: Renderer Reload Recovery
-        // Check if an examination was already running in Main memory
+        // Phase 3 & 5: Reload / Restart Recovery Check
         const runningExam = await window.examTrace.getActiveExam();
         if (runningExam) {
-          console.log("[ExamTrace] Recovering active examination from Main memory:", runningExam.attemptId);
+          console.log("[ExamTrace] Recovering active examination:", runningExam.attemptId);
           setActiveExam(runningExam);
           return;
         }
@@ -125,6 +140,18 @@ export default function App() {
     setExamResult(result);
   }
 
+  // Phase 5: View historical attempt report
+  async function handleViewReport(attemptId) {
+    try {
+      const report = await window.examTrace.getExamReport(attemptId);
+      if (report) {
+        setExamResult(report);
+      }
+    } catch (err) {
+      console.error("Failed to load historical report:", err);
+    }
+  }
+
   // 1. If an active examination is in progress, show fullscreen workspace
   if (activeExam) {
     return (
@@ -135,7 +162,7 @@ export default function App() {
     );
   }
 
-  // 2. If an examination was just submitted, show results view
+  // 2. If an examination was just submitted or a report is being inspected, show results view
   if (examResult) {
     return (
       <div className="app-container" style={{ padding: "32px 48px", overflowY: "auto", display: "block" }}>
@@ -143,7 +170,6 @@ export default function App() {
           result={examResult}
           onReturnDashboard={() => {
             setExamResult(null);
-            setActiveTab("dashboard");
             checkAppStatus();
           }}
         />
@@ -186,10 +212,16 @@ export default function App() {
                 <span>📑</span> My Reports
               </button>
               <button
+                className={`nav-item ${activeTab === "settings" ? "active" : ""}`}
+                onClick={() => setActiveTab("settings")}
+              >
+                <span>⚙️</span> Settings
+              </button>
+              <button
                 className={`nav-item ${activeTab === "diagnostics" ? "active" : ""}`}
                 onClick={() => setActiveTab("diagnostics")}
               >
-                <span>🔍</span> System Diagnostics
+                <span>🔍</span> Diagnostics
               </button>
             </>
           ) : (
@@ -234,6 +266,12 @@ export default function App() {
                 <span>📈</span> Analytics
               </button>
               <button
+                className={`nav-item ${activeTab === "settings" ? "active" : ""}`}
+                onClick={() => setActiveTab("settings")}
+              >
+                <span>⚙️</span> Settings
+              </button>
+              <button
                 className={`nav-item ${activeTab === "diagnostics" ? "active" : ""}`}
                 onClick={() => setActiveTab("diagnostics")}
               >
@@ -272,7 +310,8 @@ export default function App() {
               {activeTab === "reports" && "My Reports"}
               {activeTab === "create-exam" && (editingExamId ? "Edit Examination" : "Create New Examination")}
               {activeTab === "manage-exams" && "Manage Saved Examinations"}
-              {activeTab === "analytics" && "Performance Analytics"}
+              {activeTab === "analytics" && "Class Performance Analytics"}
+              {activeTab === "settings" && "Application Settings"}
               {activeTab === "diagnostics" && "System Diagnostics & IPC"}
             </h2>
             <span
@@ -336,25 +375,29 @@ export default function App() {
             />
           )}
 
-          {activeTab === "history" && (
-            <div className="card empty-state">
-              <h4>Attempt History</h4>
-              <p>Completed examination attempts and chronological activity logs will be recorded here in Phase 5.</p>
-            </div>
-          )}
-
-          {activeTab === "reports" && (
-            <div className="card empty-state">
-              <h4>Candidate Reports</h4>
-              <p>Individual examination scores, answers review, and desktop monitoring timelines will appear here in Phase 5.</p>
-            </div>
+          {(activeTab === "history" || activeTab === "reports") && (
+            <HistoryView
+              onViewReport={handleViewReport}
+              isExaminerView={activeMode === "examiner"}
+            />
           )}
 
           {activeTab === "analytics" && (
-            <div className="card empty-state">
-              <h4>Performance Analytics</h4>
-              <p>Examiner class-wide averages, pass rates, and monitoring interruption analytics will be computed here in Phase 6.</p>
-            </div>
+            activeMode === "examiner" ? (
+              <AnalyticsView />
+            ) : (
+              <div className="card empty-state">
+                <h4>Examiner Authorization Required</h4>
+                <p>Performance analytics and class-wide statistics are restricted to Examiner Mode.</p>
+                <button className="btn btn-outline" onClick={handleRequestExaminerMode} style={{ marginTop: "12px" }}>
+                  <span>🔒</span> Unlock Examiner Mode
+                </button>
+              </div>
+            )
+          )}
+
+          {activeTab === "settings" && (
+            <SettingsView isExaminer={activeMode === "examiner"} />
           )}
 
           {activeTab === "diagnostics" && (

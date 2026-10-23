@@ -107,10 +107,28 @@ function fileExists(filename) {
   return fs.existsSync(getDataFilePath(filename));
 }
 
+/**
+ * Safely deletes a file from userData if it exists.
+ */
+function deleteFile(filename) {
+  const filePath = getDataFilePath(filename);
+  if (fs.existsSync(filePath)) {
+    try {
+      fs.unlinkSync(filePath);
+      return true;
+    } catch (err) {
+      console.error(`[StorageService] Failed to delete ${filename}:`, err);
+      return false;
+    }
+  }
+  return false;
+}
+
 module.exports = {
   getDataFilePath,
   readJsonFile,
   writeJsonFile,
   hasExistingAppData,
-  fileExists
+  fileExists,
+  deleteFile
 };

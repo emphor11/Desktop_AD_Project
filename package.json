@@ -15,6 +15,8 @@
     "test:phase2": "electron test/phase2_test.cjs",
     "test:phase3": "electron test/phase3_test.cjs",
     "test:phase4": "electron test/phase4_test.cjs",
+    "test:phase5": "electron test/phase5_test.cjs",
+    "test:phase6": "electron test/phase6_test.cjs",
     "start": "npm run electron:dev"
   },
   "keywords": [

@@ -30,6 +30,15 @@ contextBridge.exposeInMainWorld("examTrace", {
   submitExam: () => ipcRenderer.invoke("exam:submit"),
   getLatestResult: () => ipcRenderer.invoke("exam:getLatestResult"),
 
+  // Phase 5: History & Reports
+  getExamHistory: () => ipcRenderer.invoke("exam:getHistory"),
+  getExamReport: (attemptId) => ipcRenderer.invoke("exam:getReport", attemptId),
+
+  // Phase 6: Analytics & Settings
+  getAnalytics: () => ipcRenderer.invoke("analytics:get"),
+  getSettings: () => ipcRenderer.invoke("settings:get"),
+  saveSettings: (settings) => ipcRenderer.invoke("settings:save", settings),
+
   // Phase 4: Desktop Activity Monitoring
   getMonitoringDemoMode: () => ipcRenderer.invoke("monitoring:getDemoMode"),
   setMonitoringDemoMode: (enabled) => ipcRenderer.invoke("monitoring:setDemoMode", enabled),
