@@ -49,7 +49,6 @@ function createWindow() {
   });
 }
 
-}
 // Application lifecycle management
 app.whenReady().then(async () => {
   // Register all modular IPC handlers
